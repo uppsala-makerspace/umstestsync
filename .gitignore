@@ -1,0 +1,22 @@
+# Beroenden
+node_modules/
+
+# Byggutdata
+dist/
+
+# Känsliga filer – service account-nycklar och konfiguration med hemligheter
+*.key.json
+service-account*.json
+config.json
+config.local.json
+.credentials/
+
+# Genererad testdata (synkas ner från Drive, ska inte checkas in)
+tests-data/
+
+# Lokal symlänk till exempeldata (ska inte checkas in)
+tests-data-example
+
+# Loggar och övrigt
+*.log
+.DS_Store

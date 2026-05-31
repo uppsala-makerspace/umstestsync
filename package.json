@@ -1,0 +1,26 @@
+{
+  "name": "umstestsync",
+  "version": "0.1.0",
+  "description": "Synkroniserar frågeark från Google Drive (Google Sheets) till en JSON-struktur av test och kategorier.",
+  "type": "module",
+  "bin": {
+    "umstestsync": "./dist/cli.js"
+  },
+  "main": "./dist/cli.js",
+  "scripts": {
+    "build": "tsc",
+    "sync": "tsc && node dist/cli.js",
+    "start": "node dist/cli.js",
+    "clean": "rm -rf dist"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "googleapis": "^144.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0"
+  }
+}
