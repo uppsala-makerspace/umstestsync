@@ -16,6 +16,12 @@ export interface Config {
    * Standard: 3 (kolumn C, D, E), med rätt-svar-kolumnen direkt efter.
    */
   answerCount: number;
+  /**
+   * Sökväg till en loggfil. Anges den skrivs en läsbar logg över körningen,
+   * inklusive vilka frågor som uteslutits och varför. Utelämnas den loggas
+   * endast till konsolen.
+   */
+  logFile?: string;
 }
 
 const REQUIRED_KEYS = ["serviceAccountKeyFile", "rootFolderId"] as const;
@@ -65,5 +71,9 @@ export async function loadConfig(configPath: string): Promise<Config> {
       typeof parsed.answerCount === "number" && parsed.answerCount > 0
         ? parsed.answerCount
         : 3,
+    logFile:
+      typeof parsed.logFile === "string" && parsed.logFile.length > 0
+        ? resolveRelative(parsed.logFile)
+        : undefined,
   };
 }

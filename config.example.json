@@ -3,5 +3,6 @@
   "rootFolderId": "0AJtcBqBPCOeNUk9PVA",
   "outputDir": "./tests-data",
   "language": "sv",
-  "answerCount": 3
+  "answerCount": 3,
+  "logFile": "./umstestsync.log"
 }

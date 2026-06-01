@@ -9,6 +9,7 @@ import {
 import { readSheetRows, parseQuestions } from "./sheets.js";
 import { slugify, toCategory } from "./transform.js";
 import { writeCategory } from "./writer.js";
+import { Logger } from "./logger.js";
 
 interface CliArgs {
   configPath: string;
@@ -52,14 +53,15 @@ utdatakatalog och språk. Se config.example.json.`);
 async function main(): Promise<void> {
   const { configPath } = parseArgs(process.argv.slice(2));
   const config = await loadConfig(configPath);
+  const log = new Logger(config.logFile);
 
-  console.log(`Autentiserar mot Google Drive …`);
+  log.info(`Autentiserar mot Google Drive …`);
   const { drive, sheets } = await createClients(config);
 
-  console.log(`Läser test-mappar i rotmappen ${config.rootFolderId} …`);
+  log.info(`Läser test-mappar i rotmappen ${config.rootFolderId} …`);
   const testFolders = await listTestFolders(drive, config.rootFolderId);
   if (testFolders.length === 0) {
-    console.warn(
+    log.warn(
       "Inga undermappar hittades i rotmappen. Är mappen delad med service account-mailen?",
     );
   }
@@ -70,13 +72,13 @@ async function main(): Promise<void> {
   for (const test of testFolders) {
     const testSlug = slugify(test.name);
     const categories = await listCategorySheets(drive, test.id);
-    console.log(`\n[test] ${test.name} → ${testSlug}/  (${categories.length} kategorier)`);
+    log.info(`\n[test] ${test.name} → ${testSlug}/  (${categories.length} kategorier)`);
 
     // Tom mapp kan bero på saknad åtkomst (t.ex. en genväg vars målmapp
     // inte är delad med service accountet). Skilj på de fallen.
     if (categories.length === 0 && !(await canAccess(drive, test.id))) {
-      console.warn(
-        `  ⚠ Kan inte läsa mappen "${test.name}". Om det är en genväg: ` +
+      log.warn(
+        `Kan inte läsa mappen "${test.name}". Om det är en genväg: ` +
           `dela målmappen med service account-mailen, eller flytta in den ` +
           `riktiga mappen i den delade enheten.`,
       );
@@ -85,30 +87,39 @@ async function main(): Promise<void> {
     for (const cat of categories) {
       const catSlug = slugify(cat.name);
       const rows = await readSheetRows(sheets, cat.id);
-      const { questions: parsed, warnings } = parseQuestions(rows, config.answerCount);
+      const { questions: parsed, skipped } = parseQuestions(rows, config.answerCount);
 
-      for (const w of warnings) {
-        console.warn(`  ⚠ [${cat.name}] ${w}`);
+      for (const s of skipped) {
+        log.skip({
+          test: testSlug,
+          category: catSlug,
+          questionId: s.number,
+          row: s.row,
+          reason: s.reason,
+        });
       }
 
       const category = toCategory(parsed, testSlug, catSlug, config.language);
-      const filePath = await writeCategory(
-        config.outputDir,
-        testSlug,
-        catSlug,
-        category,
-      );
+      await writeCategory(config.outputDir, testSlug, catSlug, category);
 
       totalCategories++;
       totalQuestions += category.questions.length;
-      console.log(`  ✓ ${cat.name} → ${catSlug}.json  (${category.questions.length} frågor)`);
-      void filePath;
+      const skipNote = skipped.length > 0 ? `, ${skipped.length} uteslutna` : "";
+      log.info(
+        `  ✓ ${cat.name} → ${catSlug}.json  (${category.questions.length} frågor${skipNote})`,
+      );
     }
   }
 
-  console.log(
-    `\nKlart. ${totalQuestions} frågor i ${totalCategories} kategorier skrivna till ${config.outputDir}`,
+  log.info(
+    `\nKlart. ${totalQuestions} frågor i ${totalCategories} kategorier skrivna till ${config.outputDir}` +
+      (log.skips > 0 ? ` (${log.skips} frågor uteslutna – se varningar)` : ""),
   );
+
+  const logPath = await log.flush();
+  if (logPath) {
+    console.log(`Logg skriven till ${logPath}`);
+  }
 }
 
 main().catch((err: unknown) => {

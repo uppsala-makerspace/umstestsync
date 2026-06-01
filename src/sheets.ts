@@ -2,12 +2,26 @@ import type { sheets_v4 } from "googleapis";
 import type { ParsedQuestion } from "./types.js";
 
 /**
- * Resultatet av att parsa ett ark: de giltiga frågorna samt eventuella
- * varningar om rader som hoppades över.
+ * En fråga som uteslutits ur utdatan, med tillräcklig information för att
+ * lokalisera den i arket – men utan själva frågetexten eller alternativen
+ * (testen är hemliga och ska inte hamna i loggen).
+ */
+export interface SkippedQuestion {
+  /** Radnummer i arket (1-baserat). */
+  row: number;
+  /** Frågans nummer från kolumn A, eller null om det saknades. */
+  number: string | null;
+  /** Kort orsak till att frågan uteslöts (innehåller ingen frågetext). */
+  reason: string;
+}
+
+/**
+ * Resultatet av att parsa ett ark: de giltiga frågorna samt de rader som
+ * uteslutits, med orsak.
  */
 export interface ParseResult {
   questions: ParsedQuestion[];
-  warnings: string[];
+  skipped: SkippedQuestion[];
 }
 
 /**
@@ -58,14 +72,16 @@ function looksLikeHeader(row: string[]): boolean {
  *   nästa kolumn = siffra för rätt svar (1-baserat).
  *
  * Tomma svarsceller hoppas över (stöd för färre alternativ än answerCount).
- * Rader utan fråga eller utan giltigt rätt-svar hoppas över med en varning.
+ * Rader med bara ett förhandsallokerat nummer (ingen fråga, inget annat
+ * innehåll) hoppas över tyst. Rader med fråga men utan giltiga svar/rätt-svar
+ * utesluts och rapporteras.
  */
 export function parseQuestions(
   rows: string[][],
   answerCount: number,
 ): ParseResult {
   const questions: ParsedQuestion[] = [];
-  const warnings: string[] = [];
+  const skipped: SkippedQuestion[] = [];
 
   // Kolumnindex: A=0, B=1, C=2. Svar börjar på index 2.
   const firstAnswerCol = 2;
@@ -77,26 +93,34 @@ export function parseQuestions(
     // Hoppa över en inledande rubrikrad.
     if (i === 0 && looksLikeHeader(row)) return;
 
+    const rowNo = i + 1;
     const number = (row[0] ?? "").trim();
     const questionText = (row[1] ?? "").trim();
 
-    // Helt tom rad – tyst hoppning.
+    // Helt tom rad – tyst hoppning (rapporteras inte).
     if (number === "" && questionText === "" && row.every((c) => c.trim() === "")) {
       return;
     }
 
     if (number === "") {
-      warnings.push(`Rad ${i + 1}: saknar nummer i kolumn A – hoppas över.`);
+      skipped.push({ row: rowNo, number: null, reason: "saknar nummer i kolumn A" });
       return;
     }
     if (questionText === "") {
-      warnings.push(`Rad ${i + 1} (nr ${number}): saknar frågetext – hoppas över.`);
+      // Rad med bara ett förhandsallokerat nummer (frågeskaparna reserverar
+      // unika id:n i förväg) – tyst hoppning, ingen varning. Men om raden har
+      // svar eller rätt-markering utan fråga är det troligen ett misstag och
+      // rapporteras.
+      const hasOtherContent = row
+        .slice(firstAnswerCol, correctCol + 1)
+        .some((c) => (c ?? "").trim() !== "");
+      if (hasOtherContent) {
+        skipped.push({ row: rowNo, number, reason: "saknar frågetext" });
+      }
       return;
     }
     if (seenNumbers.has(number)) {
-      warnings.push(
-        `Rad ${i + 1}: frågenummer "${number}" förekommer flera gånger – hoppas över.`,
-      );
+      skipped.push({ row: rowNo, number, reason: "dubblerat frågenummer" });
       return;
     }
 
@@ -107,17 +131,18 @@ export function parseQuestions(
     }
 
     if (answers.length === 0) {
-      warnings.push(`Rad ${i + 1} (nr ${number}): inga svarsalternativ – hoppas över.`);
+      skipped.push({ row: rowNo, number, reason: "inga svarsalternativ" });
       return;
     }
 
     const correctRaw = (row[correctCol] ?? "").trim();
     const correctIndex = Number.parseInt(correctRaw, 10);
     if (!Number.isInteger(correctIndex) || correctIndex < 1 || correctIndex > answers.length) {
-      warnings.push(
-        `Rad ${i + 1} (nr ${number}): ogiltig rätt-svar-markering "${correctRaw}" ` +
-          `(förväntade 1–${answers.length}) – hoppas över.`,
-      );
+      const detail =
+        correctRaw === ""
+          ? "rätt svar saknas"
+          : `ogiltig markering av rätt svar (förväntade 1–${answers.length})`;
+      skipped.push({ row: rowNo, number, reason: detail });
       return;
     }
 
@@ -125,5 +150,5 @@ export function parseQuestions(
     questions.push({ number, questionText, answers, correctIndex });
   });
 
-  return { questions, warnings };
+  return { questions, skipped };
 }

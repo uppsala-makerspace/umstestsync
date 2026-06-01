@@ -86,12 +86,36 @@ Kopiera `config.example.json` till `config.json` och fyll i:
   "rootFolderId": "0AJtcBqBPCOeNUk9PVA",
   "outputDir": "./tests-data",
   "language": "sv",
-  "answerCount": 3
+  "answerCount": 3,
+  "logFile": "./umstestsync.log"
 }
 ```
 
+| Fält                    | Beskrivning                                                            |
+| ----------------------- | --------------------------------------------------------------------- |
+| `serviceAccountKeyFile` | Sökväg till service account-nyckelns JSON-fil.                        |
+| `rootFolderId`          | Id för rotmappen/den delade enheten (se URL:en, se nedan).            |
+| `outputDir`             | Katalog dit JSON-strukturen skrivs. Standard `./tests-data`.          |
+| `language`              | Språkkod som texten taggas med. Standard `sv`.                        |
+| `answerCount`           | Antal svarskolumner (börjar i kolumn C). Standard `3`.                |
+| `logFile`               | Valfri sökväg till loggfil. Utelämnas → loggas endast till konsolen.  |
+
 `rootFolderId` är id:t i Drive-mappens URL: `https://drive.google.com/drive/folders/<ID>`.
 Relativa sökvägar tolkas relativt konfigurationsfilens katalog.
+
+## Loggning
+
+Anges `logFile` skrivs en läsbar logg över körningen (annars loggas allt bara till
+konsolen). Loggen listar vilka frågor som **uteslutits** och varför – t.ex. saknad
+frågetext, inga svarsalternativ eller avsaknad av markerat rätt svar:
+
+```
+WARN  utesluten fråga  test="introtra"  kategori="bandslip"  fråga 10  rad=11  orsak=saknar frågetext
+```
+
+Av sekretesskäl innehåller loggen bara **test, kategori och frågans ursprungliga
+nummer** (samt radnummer och orsak) – aldrig själva frågetexten eller svarsalternativen.
+Loggfilen skrivs om vid varje körning och är `.gitignore`:ad (`*.log`).
 
 ## Användning
 
