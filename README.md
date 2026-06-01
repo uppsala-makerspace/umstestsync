@@ -132,6 +132,20 @@ npm run sync
 npm run sync -- --config annan-config.json
 ```
 
+## Drift
+
+Systemet är driftsatt på servern och kör en synkning **varje timme**, så att
+ändringar i frågearken slår igenom automatiskt.
+
+Loggen från den senaste körningen finns publikt på:
+<https://www.uppsalamakerspace.se/umstestsync.log>
+
+Där ser du vilka frågor som uteslutits och varför (t.ex. saknat rätt svar) –
+utan att själva frågorna avslöjas.
+
+Makerspace-medlemsappen hämtar i sin tur in testfrågorna en gång i timmen, så en
+ändring i arken bör synas i appen inom några minuter efter att synkningen körts.
+
 ## Utveckling
 
 - `npm run build` – kompilerar TypeScript till `dist/`.
