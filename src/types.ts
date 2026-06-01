@@ -27,6 +27,8 @@ export interface Question {
 
 /** Innehållet i en kategorifil (motsvarar ett spreadsheet). */
 export interface Category {
+  /** Kategorins titel, från spreadsheetets namn (med å/ä/ö bevarade). */
+  title: LocalizedText;
   questions: Question[];
 }
 

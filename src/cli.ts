@@ -99,7 +99,7 @@ async function main(): Promise<void> {
         });
       }
 
-      const category = toCategory(parsed, testSlug, catSlug, config.language);
+      const category = toCategory(parsed, cat.name, testSlug, catSlug, config.language);
       await writeCategory(config.outputDir, testSlug, catSlug, category);
 
       totalCategories++;

@@ -35,12 +35,14 @@ export function slugify(name: string): string {
  * Omvandlar parsade frågor till utdataformatet.
  *
  * @param parsed    Frågorna från ett ark.
+ * @param title     Kategorins titel (arkets råa namn, med å/ä/ö bevarade).
  * @param testSlug  Sluggat testnamn (undermappens namn).
  * @param catSlug   Sluggat kategorinamn (arkets namn).
  * @param language  Språkkod som texterna taggas med, t.ex. "sv".
  */
 export function toCategory(
   parsed: ParsedQuestion[],
+  title: string,
   testSlug: string,
   catSlug: string,
   language: string,
@@ -60,5 +62,5 @@ export function toCategory(
     };
   });
 
-  return { questions };
+  return { title: { [language]: title.trim() }, questions };
 }
