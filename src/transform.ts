@@ -1,6 +1,12 @@
-import type { Category, Option, ParsedQuestion, Question } from "./types.js";
+import type { Category, LocalizedText, Option, ParsedQuestion, Question } from "./types.js";
 
-/** Bokstavs-id för svarsalternativ: a, b, c, ... z, aa, ab, ... */
+/**
+ * Bokstavs-id för svarsalternativ: a, b, c, ... z, aa, ab, ...
+ *
+ * Id:t är rent positionellt. Att "b" betyder samma alternativ på alla språk
+ * vilar på att parseQuestions kräver identiskt ifyllda svarskolumner för
+ * frågans språkrader – ta inte bort den kontrollen.
+ */
 function letterId(index: number): string {
   let n = index;
   let s = "";
@@ -35,32 +41,30 @@ export function slugify(name: string): string {
  * Omvandlar parsade frågor till utdataformatet.
  *
  * @param parsed    Frågorna från ett ark.
- * @param title     Kategorins titel (arkets råa namn, med å/ä/ö bevarade).
+ * @param title     Kategorins titel per språk (färdigbyggd av anroparen).
  * @param testSlug  Sluggat testnamn (undermappens namn).
  * @param catSlug   Sluggat kategorinamn (arkets namn).
- * @param language  Språkkod som texterna taggas med, t.ex. "sv".
  */
 export function toCategory(
   parsed: ParsedQuestion[],
-  title: string,
+  title: LocalizedText,
   testSlug: string,
   catSlug: string,
-  language: string,
 ): Category {
   const questions: Question[] = parsed.map((q) => {
     const options: Option[] = q.answers.map((text, idx) => ({
       id: letterId(idx),
-      text: { [language]: text },
+      text,
       // correctIndex är 1-baserat.
       correct: idx + 1 === q.correctIndex,
     }));
 
     return {
       id: `${testSlug}-${catSlug}-${q.number}`,
-      question: { [language]: q.questionText },
+      question: q.questionText,
       options,
     };
   });
 
-  return { title: { [language]: title.trim() }, questions };
+  return { title, questions };
 }

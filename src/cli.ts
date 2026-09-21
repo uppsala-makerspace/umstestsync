@@ -10,6 +10,7 @@ import { readSheetRows, parseQuestions } from "./sheets.js";
 import { slugify, toCategory } from "./transform.js";
 import { writeCategory } from "./writer.js";
 import { Logger } from "./logger.js";
+import type { LocalizedText } from "./types.js";
 
 interface CliArgs {
   configPath: string;
@@ -50,6 +51,17 @@ Konfigurationen styr service account-nyckel, rotmapp på Drive,
 utdatakatalog och språk. Se config.example.json.`);
 }
 
+/** "1 fråga" / "3 frågor". */
+function plural(count: number): string {
+  return `${count} ${count === 1 ? "fråga" : "frågor"}`;
+}
+
+/** Kortar en lång lista frågenummer så att loggraden förblir läsbar. */
+function formatNumbers(numbers: string[]): string {
+  const shown = numbers.slice(0, 20).join(", ");
+  return numbers.length > 20 ? `${shown}, …` : shown;
+}
+
 async function main(): Promise<void> {
   const { configPath } = parseArgs(process.argv.slice(2));
   const config = await loadConfig(configPath);
@@ -87,7 +99,18 @@ async function main(): Promise<void> {
     for (const cat of categories) {
       const catSlug = slugify(cat.name);
       const rows = await readSheetRows(sheets, cat.id);
-      const { questions: parsed, skipped } = parseQuestions(rows, config.answerCount);
+      const {
+        questions: parsed,
+        titleOverrides,
+        skipped,
+        missingTranslations,
+        droppedTranslations,
+        warnings,
+      } = parseQuestions(rows, config.answerCount, config.language);
+
+      for (const w of warnings) {
+        log.warn(`[${catSlug}] ${w}`);
+      }
 
       for (const s of skipped) {
         log.skip({
@@ -99,7 +122,40 @@ async function main(): Promise<void> {
         });
       }
 
-      const category = toCategory(parsed, cat.name, testSlug, catSlug, config.language);
+      // En rad per språk – inte en per fråga: ett ark med fem av sextio frågor
+      // översatta ska inte fylla loggen med varningar.
+      for (const m of missingTranslations) {
+        log.warn(
+          `[${catSlug}] ${plural(m.numbers.length)} saknar ${m.language}-översättning: ` +
+            formatNumbers(m.numbers),
+        );
+      }
+
+      // Frågan är med – det är bara översättningen som fallit bort.
+      for (const d of droppedTranslations) {
+        log.warn(
+          `[${catSlug}] ${d.language}-översättningen utesluten för ${plural(d.numbers.length)} ` +
+            `(${d.reason}): ${formatNumbers(d.numbers)}`,
+        );
+      }
+
+      // Arkets titel kommer från spreadsheetets namn, men en titelrad i arket
+      // får överlagra den (och lägga till fler språk).
+      const title: LocalizedText = { [config.language]: cat.name.trim(), ...titleOverrides };
+      const category = toCategory(parsed, title, testSlug, catSlug);
+
+      // Ett ark som plötsligt inte ger någon fråga alls (t.ex. en flerspråkig
+      // layout vars rubrikrad försvunnit) ska inte skriva över en fungerande
+      // kategorifil – utdatan är inte versionshanterad.
+      const filledRows = rows.filter((r) => r.some((c) => c.trim() !== "")).length;
+      if (category.questions.length === 0 && filledRows > 1) {
+        log.warn(
+          `Inga frågor kunde läsas ur "${cat.name}" trots ${filledRows} ifyllda rader – ` +
+            `${catSlug}.json lämnas orörd. Kontrollera arkets rubrikrad och kolumner.`,
+        );
+        continue;
+      }
+
       await writeCategory(config.outputDir, testSlug, catSlug, category);
 
       totalCategories++;

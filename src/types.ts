@@ -1,9 +1,9 @@
 /**
  * Typer för utdataformatet. Speglar strukturen i tests-data-example/.
  *
- * Text representeras som ett språkobjekt, t.ex. { "sv": "..." }, även om
- * arken just nu är enspråkiga. Det gör formatet framtidssäkert om fler
- * språk tillkommer.
+ * Text representeras som ett språkobjekt, t.ex. { "sv": "..." }. Ett ark kan
+ * vara enspråkigt (texten taggas med baspråket ur konfigurationen) eller
+ * flerspråkigt (en rad per språk, se sheets.ts).
  */
 
 /** Texter nycklade på språkkod, t.ex. { sv: "Var hittar du ...?" }. */
@@ -27,21 +27,27 @@ export interface Question {
 
 /** Innehållet i en kategorifil (motsvarar ett spreadsheet). */
 export interface Category {
-  /** Kategorins titel, från spreadsheetets namn (med å/ä/ö bevarade). */
+  /**
+   * Kategorins titel per språk. Baspråkets titel kommer från spreadsheetets
+   * namn (med å/ä/ö bevarade) om inte en titelrad i arket säger annat.
+   */
   title: LocalizedText;
   questions: Question[];
 }
 
 /**
- * Ett rått, parsat frågeobjekt innan det fått sitt globala id och
- * lokaliserats. Numret kommer från arkets första kolumn.
+ * Ett rått, parsat frågeobjekt innan det fått sitt globala id. Numret kommer
+ * från arkets nummerkolumn och delas av frågans alla språkrader.
  */
 export interface ParsedQuestion {
-  /** Frågans nummer från kolumn A (unikt inom arket). */
+  /** Frågans nummer från nummerkolumnen (unikt inom arket). */
   number: string;
-  questionText: string;
-  /** Svarstexter i ordning (svar 1, 2, 3 ...). */
-  answers: string[];
-  /** 1-baserat index för rätt svar (från kolumn F). */
+  questionText: LocalizedText;
+  /**
+   * Svarstexter i ordning (svar 1, 2, 3 ...), var och en med sina språktexter.
+   * Positionen är gemensam för alla språk – se parseQuestions.
+   */
+  answers: LocalizedText[];
+  /** 1-baserat index för rätt svar, gemensamt för alla språk. */
   correctIndex: number;
 }
