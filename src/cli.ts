@@ -8,7 +8,7 @@ import {
 } from "./drive.js";
 import type { sheets_v4 } from "googleapis";
 import { readSheetRows, parseQuestions, formulaSeparator, type SheetData } from "./sheets.js";
-import { planSheetEdits } from "./translate.js";
+import { planSheetEdits, type SheetPlan } from "./translate.js";
 import { applySheetEdits } from "./writeSheet.js";
 import type { DriveItem } from "./drive.js";
 import type { Config } from "./config.js";
@@ -100,15 +100,16 @@ async function fillTranslations(
   if (parsed.layout.languageCol === null) return false;
   if (parsed.questions.length === 0) return false;
 
-  const edits = planSheetEdits(parsed.records, parsed.questions, parsed.layout, {
+  const plan = planSheetEdits(parsed.records, parsed.questions, parsed.layout, {
     sheetName: cat.name,
     baseLanguage: config.language,
     targetLanguages: config.translateTo,
     separator: formulaSeparator(sheet.locale),
   });
-  if (edits.length === 0) return false;
+  const changes = plan.inserts.length + plan.fills.length;
+  if (changes === 0) return false;
 
-  const summary = describeEdits(edits.map((e) => e.label));
+  const summary = describePlan(plan, config.language);
 
   if (cat.canEdit === false) {
     log.warn(
@@ -117,9 +118,9 @@ async function fillTranslations(
     );
     return false;
   }
-  if (edits.length > MAX_INSERTS_PER_SHEET) {
+  if (plan.inserts.length > MAX_INSERTS_PER_SHEET) {
     log.warn(
-      `"${cat.name}" skulle behöva ${edits.length} nya rader, vilket överstiger taket ` +
+      `"${cat.name}" skulle behöva ${plan.inserts.length} nya rader, vilket överstiger taket ` +
         `på ${MAX_INSERTS_PER_SHEET}. Inget skrevs – kontrollera arkets layout.`,
     );
     return false;
@@ -135,17 +136,17 @@ async function fillTranslations(
     return false;
   }
 
-  const res = await applySheetEdits(sheetsApi, cat.id, sheet, edits);
+  const res = await applySheetEdits(sheetsApi, cat.id, sheet, plan);
   for (const w of res.warnings) log.warn(`[${slugify(cat.name)}] ${w}`);
   log.info(`  ✎ ${cat.name}: ${summary}`);
-  return res.inserted > 0;
+  return res.inserted + res.filled > 0;
 }
 
-/** "11 en-översättningar, titel (sv), titel (en)" – aldrig någon frågetext. */
-function describeEdits(labels: string[]): string {
+/** "11 en-översättningar, titel (sv), 12 språktaggar (sv)" – aldrig någon frågetext. */
+function describePlan(plan: SheetPlan, baseLanguage: string): string {
   const perLanguage = new Map<string, number>();
   const titles: string[] = [];
-  for (const label of labels) {
+  for (const { label } of plan.inserts) {
     if (label.startsWith("titel")) {
       titles.push(label);
       continue;
@@ -154,6 +155,9 @@ function describeEdits(labels: string[]): string {
     perLanguage.set(lang, (perLanguage.get(lang) ?? 0) + 1);
   }
   const parts = [...perLanguage.entries()].map(([lang, n]) => `${n} ${lang}-översättningar`);
+  if (plan.fills.length > 0) {
+    titles.push(`${plan.fills.length} språktaggar (${baseLanguage})`);
+  }
   return [...parts, ...titles].join(", ");
 }
 

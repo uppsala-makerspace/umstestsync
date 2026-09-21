@@ -1,11 +1,13 @@
 import type { sheets_v4 } from "googleapis";
 import { formulaSeparator, overrideSeparator, type SheetData } from "./sheets.js";
-import type { SheetEdit } from "./translate.js";
+import type { SheetEdit, SheetPlan } from "./translate.js";
 
 /** Resultatet av att applicera ändringar på ett ark. */
 export interface WriteResult {
   /** Antal infogade rader. */
   inserted: number;
+  /** Antal ifyllda språkceller. */
+  filled: number;
   /** Etiketter för det som lades till, för loggen (aldrig frågetext). */
   labels: string[];
   warnings: string[];
@@ -82,9 +84,12 @@ export async function applySheetEdits(
   sheets: sheets_v4.Sheets,
   spreadsheetId: string,
   sheet: SheetData,
-  edits: SheetEdit[],
+  plan: SheetPlan,
 ): Promise<WriteResult> {
-  if (edits.length === 0) return { inserted: 0, labels: [], warnings: [] };
+  const edits = plan.inserts;
+  if (edits.length === 0 && plan.fills.length === 0) {
+    return { inserted: 0, filled: 0, labels: [], warnings: [] };
+  }
 
   // Gruppera per ankare: flera målspråk på samma fråga infogas som ett block.
   const byAnchor = new Map<number, SheetEdit[]>();
@@ -105,6 +110,13 @@ export async function applySheetEdits(
   }
 
   const requests: sheets_v4.Schema$Request[] = [];
+
+  // Ifyllningarna först: de ändrar inte radantalet, och så länge ingen
+  // insättning hunnit tillämpas gäller radernas ursprungliga index.
+  for (const fill of plan.fills) {
+    requests.push(rowRequest(sheet.sheetId, fill.row - 1, [{ col: fill.col, value: fill.value }]));
+  }
+
   for (const anchor of [...anchors].reverse()) {
     const group = byAnchor.get(anchor) ?? [];
     if (anchor >= sheet.rowCount) {
@@ -134,7 +146,12 @@ export async function applySheetEdits(
   );
 
   const warnings = await verify(sheets, spreadsheetId, sheet, placed);
-  return { inserted: edits.length, labels: edits.map((e) => e.label), warnings };
+  return {
+    inserted: edits.length,
+    filled: plan.fills.length,
+    labels: edits.map((e) => e.label),
+    warnings,
+  };
 }
 
 /**

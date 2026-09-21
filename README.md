@@ -71,6 +71,9 @@ titel  | en    | Pillar drill         |        |        |        |
 - Godkända rubriker: `Språk`, `Language` eller `Lang` – skiftlägesokänsligt, men utan
   tillägg i cellen.
 - Språkkoden används som nyckel i JSON:en, i gemener (`sv`, `en`).
+- En tom språkcell läses som baspråket, så att en tillagd Språk-kolumn inte slår ut
+  ett ark som ännu inte hunnit taggas. Är `translateTo` ifyllt skriver verktyget
+  dessutom ut baspråkskoden i cellen, så att taggen syns i arket.
 - Raderna hör ihop via **numret**. Nummer- och rätt-svar-cellerna får vara
   sammanslagna (merge:ade) över språkraderna – står värdet bara på den första raden
   ärver följdraderna det.
@@ -101,6 +104,7 @@ globalt unikt över hela frågepoolen. Numret delas av frågans språkrader, så
 Att översätta ett helt ark för hand är besvärligt. Anges `translateTo` i
 konfigurationen fyller synken själv på det som saknas i **flerspråkiga** ark:
 
+- baspråkets kod i de språkceller som lämnats tomma,
 - en titelrad per språk, om de saknas (baspråkets med spreadsheetets namn),
 - en översättningsrad per fråga och målspråk, direkt under frågans sista rad.
 
@@ -114,8 +118,8 @@ frågan följer översättningen med automatiskt. Vill du rätta en översättni
 du helt enkelt över cellen – då blir den statisk text och verktyget rör den aldrig
 mer. Frys alltså inte formlerna till värden "för städningens skull".
 
-Verktyget **ändrar aldrig en befintlig cell**, bara infogar nya rader. Följderna av
-det:
+Verktyget **ändrar aldrig en cell som har innehåll**. Det infogar nya rader och
+fyller i tomma språkceller; allt annat lämnas orört. Följderna av det:
 
 - Har en översättningsrad bara halva innehållet ifyllt lagas den inte – den faller
   bort ur utdatan och loggas som varning tills du fyllt i den.
@@ -226,7 +230,7 @@ WARN  [pelartest] en-översättningen utesluten för 1 fråga (svarsalternativen
 Och en rad när verktyget fyllt på arket:
 
 ```
-  ✎ Bandsliptest: 11 en-översättningar, titel (sv), titel (en)
+  ✎ Bandsliptest: 11 en-översättningar, titel (sv), titel (en), 11 språktaggar (sv)
 ```
 
 En cell vars `GOOGLETRANSLATE`-formel failat (`#ERROR!`, `#N/A` …) tas aldrig med i

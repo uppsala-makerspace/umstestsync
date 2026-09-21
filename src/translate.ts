@@ -16,6 +16,22 @@ export interface SheetEdit {
   label: string;
 }
 
+/** En befintlig, tom cell som ska fyllas i. Ingen rad infogas. */
+export interface CellFill {
+  /** 1-baserat radnummer i det ursprungliga rutnätet. */
+  row: number;
+  col: number;
+  value: string;
+}
+
+/** Allt som behöver ändras i ett ark. */
+export interface SheetPlan {
+  /** Rader att infoga. */
+  inserts: SheetEdit[];
+  /** Tomma språkceller att fylla i med baspråket. */
+  fills: CellFill[];
+}
+
 export interface PlanOptions {
   /** Spreadsheetets namn, används som titel på baspråket. */
   sheetName: string;
@@ -51,12 +67,22 @@ export function planSheetEdits(
   accepted: ParsedQuestion[],
   layout: Layout,
   opts: PlanOptions,
-): SheetEdit[] {
-  if (layout.languageCol === null || opts.targetLanguages.length === 0) return [];
+): SheetPlan {
+  if (layout.languageCol === null || opts.targetLanguages.length === 0) {
+    return { inserts: [], fills: [] };
+  }
   const langCol = layout.languageCol;
   const { baseLanguage, targetLanguages, separator: sep } = opts;
 
   const edits: SheetEdit[] = [];
+
+  // --- Tomma språkceller ----------------------------------------------------
+  // En rad utan språktagg läses som baspråket; skriv ut det i arket så att
+  // taggen syns och raden blir entydig. Bara rader som faktiskt bär text –
+  // ett reserverat nummer utan fråga lämnas orört.
+  const fills: CellFill[] = records
+    .filter((r) => !r.hasLanguageTag && r.questionText !== "")
+    .map((r) => ({ row: r.row, col: langCol, value: baseLanguage }));
 
   // --- Titelrader -----------------------------------------------------------
   // Rubrikraden är 1-baserat radnummer layout.dataStart (dataStart är det
@@ -159,5 +185,5 @@ export function planSheetEdits(
   }
 
   // Loggas i arkets ordning; skrivaren sorterar om nedifrån och upp.
-  return edits.sort((a, b) => a.anchorRow - b.anchorRow);
+  return { inserts: edits.sort((a, b) => a.anchorRow - b.anchorRow), fills };
 }
