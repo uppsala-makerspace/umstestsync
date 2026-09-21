@@ -96,6 +96,51 @@ Frågans id i utdatan blir `"<test-slug>-<kategori-slug>-<nummer>"` så att det 
 globalt unikt över hela frågepoolen. Numret delas av frågans språkrader, så id:t
 ändras inte när en översättning tillkommer.
 
+## Automatisk påfyllning av översättningar
+
+Att översätta ett helt ark för hand är besvärligt. Anges `translateTo` i
+konfigurationen fyller synken själv på det som saknas i **flerspråkiga** ark:
+
+- en titelrad per språk, om de saknas (baspråkets med spreadsheetets namn),
+- en översättningsrad per fråga och målspråk, direkt under frågans sista rad.
+
+Den nya raden får språktaggen, tom nummercell och tom rätt-svar-cell (båda ärvs
+uppifrån) samt `=GOOGLETRANSLATE(...)` i frågekolumnen och i exakt de svarskolumner
+som är ifyllda på källraden. Källspråket i formeln tas från källradens egen
+språktagg.
+
+**Formlerna ligger kvar som formler.** Det är avsiktligt: rättar du den svenska
+frågan följer översättningen med automatiskt. Vill du rätta en översättning skriver
+du helt enkelt över cellen – då blir den statisk text och verktyget rör den aldrig
+mer. Frys alltså inte formlerna till värden "för städningens skull".
+
+Verktyget **ändrar aldrig en befintlig cell**, bara infogar nya rader. Följderna av
+det:
+
+- Har en översättningsrad bara halva innehållet ifyllt lagas den inte – den faller
+  bort ur utdatan och loggas som varning tills du fyllt i den.
+- Raderar du en översättningsrad återskapas den vid nästa körning. Vill du undertrycka
+  en översättning behåller du raden och tömmer texten; språktaggen räcker för att
+  verktyget ska lämna frågan i fred.
+- När titelraderna väl finns styr **de** kategorititeln – döper du om spreadsheetet
+  ändras inte längre titeln i utdatan.
+- Verktyget infogar rader. Egna formler i andra flikar och namngivna intervall
+  justeras av Sheets när insättningen ligger inuti intervallet, men inte när den
+  ligger exakt på slutgränsen.
+
+Inget skrivs om `translateTo` saknas (då begärs inte ens skrivbehörighet), om arket
+saknar språkkolumn, om arket inte gav en enda läsbar fråga, om service accountet
+saknar redigeringsrätt, eller om arket skulle behöva fler än 500 nya rader.
+
+Kör med `--dry-run` för att se vad som skulle läggas till utan att skriva något:
+
+```bash
+npm run sync -- --dry-run
+```
+
+Det är också det sätt man bör felsöka manuellt på, eftersom en manuell körning
+samtidigt som serverns timkörning annars kan ge en dubblettrad.
+
 ## Autentisering (service account)
 
 Drive-mappen är skyddad. Åtkomst sker med ett **service account**:
@@ -123,7 +168,8 @@ För varje test:
    umstestsync-reader@umstestsync.iam.gserviceaccount.com
    ```
 
-   med minst läsbehörighet (*Visare*).
+   med minst läsbehörighet (*Visare*) – eller **Redigerare**, om verktyget ska fylla
+   på översättningsrader i arken (se `translateTo`).
 
 > Viktigt: en genväg i den delade enheten ger **inte** i sig service accountet åtkomst
 > till mappen den pekar på. Du måste dela själva målmappen med användaren ovan, annars
@@ -140,6 +186,7 @@ Kopiera `config.example.json` till `config.json` och fyll i:
   "rootFolderId": "0AJtcBqBPCOeNUk9PVA",
   "outputDir": "./tests-data",
   "language": "sv",
+  "translateTo": ["en"],
   "answerCount": 3,
   "logFile": "./umstestsync.log"
 }
@@ -150,7 +197,8 @@ Kopiera `config.example.json` till `config.json` och fyll i:
 | `serviceAccountKeyFile` | Sökväg till service account-nyckelns JSON-fil.                        |
 | `rootFolderId`          | Id för rotmappen/den delade enheten (se URL:en, se nedan).            |
 | `outputDir`             | Katalog dit JSON-strukturen skrivs. Standard `./tests-data`.          |
-| `language`              | Baspråk: används för enspråkiga ark och som titelfallback. Standard `sv`. |
+| `language`              | Baspråk: källspråk, standardtagg för otaggade rader, titelfallback. Standard `sv`. |
+| `translateTo`           | Språk som arken ska fyllas på med. Utelämnas → verktyget skriver ingenting.  |
 | `answerCount`           | Antal svarskolumner (börjar i kolumn C). Standard `3`.                |
 | `logFile`               | Valfri sökväg till loggfil. Utelämnas → loggas endast till konsolen.  |
 
@@ -174,6 +222,16 @@ en fråga saknar en översättning (samlat till en rad per kategori och språk):
 WARN  [pelartest] 3 frågor saknar en-översättning: 4, 7, 9
 WARN  [pelartest] en-översättningen utesluten för 1 fråga (svarsalternativen är olika ifyllda): 5
 ```
+
+Och en rad när verktyget fyllt på arket:
+
+```
+  ✎ Bandsliptest: 11 en-översättningar, titel (sv), titel (en)
+```
+
+En cell vars `GOOGLETRANSLATE`-formel failat (`#ERROR!`, `#N/A` …) tas aldrig med i
+utdatan – raden utesluts med orsaken `formelfel i cellen` och varnas vid varje
+körning tills den rättats.
 
 Av sekretesskäl innehåller loggen bara **test, kategori och frågans ursprungliga
 nummer** (samt radnummer och orsak) – aldrig själva frågetexten eller svarsalternativen.
@@ -212,7 +270,12 @@ Makerspace-medlemsappen hämtar i sin tur in testfrågorna en gång i timmen, s�
 
 Som skydd mot att ett trasigt ark tömmer en kategori skrivs kategorifilen **inte** om
 när arket har innehåll men inte gav en enda giltig fråga (t.ex. en flerspråkig layout
-vars rubrikrad försvunnit). Den föregående filen ligger kvar och orsaken loggas.
+vars rubrikrad försvunnit). Den föregående filen ligger kvar och orsaken loggas. Ett
+ark som kastar fel stoppar heller inte körningen – felet loggas och nästa kategori tas.
+
+Är `translateTo` ifyllt skriver den timvisa körningen även i arken (se *Automatisk
+påfyllning av översättningar*). Det är idempotent: när alla rader finns gör
+efterföljande körningar ingenting.
 
 ## Utveckling
 

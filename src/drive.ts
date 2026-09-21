@@ -11,6 +11,11 @@ export interface DriveItem {
   id: string;
   /** Namnet att visa/slugga (genvägens eget namn om det är en genväg). */
   name: string;
+  /**
+   * Om service accountet får redigera objektet. undefined för genvägar, där
+   * capabilities tillhör genvägen och inte målet – då får skrivförsöket avgöra.
+   */
+  canEdit?: boolean;
 }
 
 /** Klienter för Drive- och Sheets-API:erna, autentiserade via service account. */
@@ -21,14 +26,20 @@ export interface GoogleClients {
 
 /**
  * Autentiserar mot Google med en service account-nyckel och returnerar
- * Drive- och Sheets-klienter. Endast läsbehörighet begärs.
+ * Drive- och Sheets-klienter.
+ *
+ * Drive begärs alltid som läsbehörighet – verktyget skapar eller flyttar
+ * aldrig filer. Skrivbehörighet på ark begärs bara när `translateTo` är
+ * ifyllt, dvs. när verktyget faktiskt ska fylla på översättningsrader.
  */
 export async function createClients(config: Config): Promise<GoogleClients> {
   const auth = new google.auth.GoogleAuth({
     keyFile: config.serviceAccountKeyFile,
     scopes: [
       "https://www.googleapis.com/auth/drive.readonly",
-      "https://www.googleapis.com/auth/spreadsheets.readonly",
+      config.translateTo.length > 0
+        ? "https://www.googleapis.com/auth/spreadsheets"
+        : "https://www.googleapis.com/auth/spreadsheets.readonly",
     ],
   });
   const authClient = await auth.getClient();
@@ -63,7 +74,7 @@ async function listChildren(
     const res = await drive.files.list({
       q: query,
       fields:
-        "nextPageToken, files(id, name, mimeType, " +
+        "nextPageToken, files(id, name, mimeType, capabilities(canEdit), " +
         "shortcutDetails(targetId, targetMimeType))",
       orderBy: "name",
       pageSize: 1000,
@@ -86,7 +97,7 @@ async function listChildren(
       }
 
       if (file.mimeType === targetMimeType && file.id) {
-        items.push({ id: file.id, name: file.name });
+        items.push({ id: file.id, name: file.name, canEdit: file.capabilities?.canEdit ?? false });
       }
     }
 

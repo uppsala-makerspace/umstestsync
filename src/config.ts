@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { resolve, dirname, isAbsolute } from "node:path";
+import { LANGUAGE_CODE } from "./sheets.js";
 
 /** Konfiguration för en synkning. Läses från en JSON-fil. */
 export interface Config {
@@ -9,8 +10,14 @@ export interface Config {
   rootFolderId: string;
   /** Katalog dit JSON-strukturen skrivs. */
   outputDir: string;
-  /** Språkkod som arkens text taggas med. Standard: "sv". */
+  /** Baspråket: källspråk och standardtagg för otaggade rader. Standard: "sv". */
   language: string;
+  /**
+   * Språk som saknade översättningsrader ska fyllas på med, direkt i arken,
+   * med =GOOGLETRANSLATE-formler. Tom lista (standard) = verktyget skriver
+   * ingenting alls och begär bara läsbehörighet.
+   */
+  translateTo: string[];
   /**
    * Antal förväntade svarskolumner (svar 1, 2, 3 ...) som börjar i kolumn C.
    * Standard: 3 (kolumn C, D, E), med rätt-svar-kolumnen direkt efter.
@@ -25,6 +32,29 @@ export interface Config {
 }
 
 const REQUIRED_KEYS = ["serviceAccountKeyFile", "rootFolderId"] as const;
+
+/**
+ * Normaliserar och validerar målspråken. En felstavad kod skulle skriva en
+ * felaktig rad i varje fråga i varje ark vid första körningen, så configen
+ * avvisas hellre än att gissa.
+ */
+function parseTranslateTo(value: unknown, language: string): string[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.some((v) => typeof v !== "string")) {
+    throw new Error('Konfigurationens "translateTo" måste vara en lista med språkkoder.');
+  }
+  const seen = new Set<string>();
+  for (const raw of value as string[]) {
+    const code = raw.trim().toLowerCase();
+    if (!LANGUAGE_CODE.test(code)) {
+      throw new Error(
+        `Konfigurationens "translateTo" innehåller en ogiltig språkkod: "${raw}".`,
+      );
+    }
+    if (code !== language.trim().toLowerCase()) seen.add(code);
+  }
+  return [...seen];
+}
 
 /**
  * Läser och validerar en konfigurationsfil. Relativa sökvägar i configen
@@ -60,13 +90,16 @@ export async function loadConfig(configPath: string): Promise<Config> {
   const resolveRelative = (p: string): string =>
     isAbsolute(p) ? p : resolve(configDir, p);
 
+  const language = typeof parsed.language === "string" ? parsed.language : "sv";
+
   return {
+    translateTo: parseTranslateTo(parsed.translateTo, language),
     serviceAccountKeyFile: resolveRelative(parsed.serviceAccountKeyFile as string),
     rootFolderId: parsed.rootFolderId as string,
     outputDir: resolveRelative(
       typeof parsed.outputDir === "string" ? parsed.outputDir : "./tests-data",
     ),
-    language: typeof parsed.language === "string" ? parsed.language : "sv",
+    language,
     answerCount:
       typeof parsed.answerCount === "number" && parsed.answerCount > 0
         ? parsed.answerCount

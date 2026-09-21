@@ -47,30 +47,53 @@ export interface ParseResult {
   skipped: SkippedQuestion[];
   missingTranslations: MissingTranslation[];
   droppedTranslations: DroppedTranslation[];
+  /** Kolumnlayouten som användes (planeraren i translate.ts behöver den). */
+  layout: Layout;
+  /** Alla datarader, även de som inte gav någon fråga. */
+  records: RowRecord[];
   /** Varningar om arket som helhet (rubrikrad, titelrader, konstiga språkkoder). */
   warnings: string[];
 }
 
+/** Första fliken i ett spreadsheet, med det som behövs för att även skriva. */
+export interface SheetData {
+  /** Flikens id, krävs av insertDimension/updateCells. */
+  sheetId: number;
+  /** Flikens namn. */
+  title: string;
+  /** Spreadsheetets locale, t.ex. "sv_SE" – styr formlernas argumentavskiljare. */
+  locale: string;
+  /** Rutnätets storlek, så att vi inte skriver utanför det. */
+  rowCount: number;
+  columnCount: number;
+  rows: string[][];
+}
+
 /**
  * Läser alla cellvärden från första fliken i ett spreadsheet.
- * Använder UNFORMATTED_VALUE så att rätt-svar-kolumnen kommer som tal.
+ * Använder UNFORMATTED_VALUE så att rätt-svar-kolumnen kommer som tal, och
+ * så att en GOOGLETRANSLATE-formel läses som sitt beräknade värde.
  */
 export async function readSheetRows(
   sheets: sheets_v4.Sheets,
   spreadsheetId: string,
-): Promise<string[][]> {
+): Promise<SheetData> {
   // Hämta metadata för att få namnet på första fliken.
   const meta = await sheets.spreadsheets.get({
     spreadsheetId,
-    fields: "sheets.properties(title,index)",
+    fields: "properties.locale,sheets.properties(sheetId,title,index,gridProperties)",
   });
   const first = (meta.data.sheets ?? [])
     .map((s) => s.properties)
     .filter((p): p is sheets_v4.Schema$SheetProperties => Boolean(p))
     .sort((a, b) => (a.index ?? 0) - (b.index ?? 0))[0];
 
+  const empty: SheetData = {
+    sheetId: 0, title: "", locale: meta.data.properties?.locale ?? "",
+    rowCount: 0, columnCount: 0, rows: [],
+  };
   if (!first?.title) {
-    return [];
+    return empty;
   }
 
   const res = await sheets.spreadsheets.values.get({
@@ -80,7 +103,38 @@ export async function readSheetRows(
   });
 
   const rows = res.data.values ?? [];
-  return rows.map((row) => row.map((cell) => (cell == null ? "" : String(cell).trim())));
+  return {
+    sheetId: first.sheetId ?? 0,
+    title: first.title,
+    locale: meta.data.properties?.locale ?? "",
+    rowCount: first.gridProperties?.rowCount ?? rows.length,
+    columnCount: first.gridProperties?.columnCount ?? 0,
+    rows: rows.map((row) => row.map((cell) => (cell == null ? "" : String(cell).trim()))),
+  };
+}
+
+/**
+ * Argumentavskiljare i formler. Sheets tolkar formler efter arkets locale:
+ * där decimaltecknet är komma används semikolon som avskiljare. Fel tecken
+ * ger "#ERROR! (Formula parse error.)".
+ */
+const separatorCache = new Map<string, string>();
+export function formulaSeparator(locale: string): string {
+  const cached = separatorCache.get(locale);
+  if (cached !== undefined) return cached;
+  let sep = ",";
+  try {
+    sep = Intl.NumberFormat(locale.replace("_", "-")).format(1.1).includes(",") ? ";" : ",";
+  } catch {
+    sep = ",";
+  }
+  separatorCache.set(locale, sep);
+  return sep;
+}
+
+/** Glömmer en cachad avskiljare, när verifieringen visat att den var fel. */
+export function overrideSeparator(locale: string, separator: string): void {
+  separatorCache.set(locale, separator);
 }
 
 /**
@@ -103,10 +157,10 @@ const LANGUAGE_HEADERS = new Set(["sprak", "language", "lang"]);
 const TITLE_KEYWORDS = new Set(["titel", "title"]);
 
 /** Form som en språkkod förväntas ha, t.ex. "sv", "en", "en-gb". */
-const LANGUAGE_CODE = /^[a-z]{2,3}(-[a-z0-9]+)*$/;
+export const LANGUAGE_CODE = /^[a-z]{2,3}(-[a-z0-9]+)*$/;
 
 /** Kolumnbokstav för ett nollbaserat kolumnindex (A, B, C ...). */
-function colLetter(index: number): string {
+export function colLetter(index: number): string {
   let n = index;
   let s = "";
   do {
@@ -117,7 +171,7 @@ function colLetter(index: number): string {
 }
 
 /** Var arkets olika fält ligger, och var datat börjar. */
-interface Layout {
+export interface Layout {
   numberCol: number;
   /** null = enspråkigt ark. */
   languageCol: number | null;
@@ -204,22 +258,222 @@ export function detectLayout(
  * men "01" för en textcell – utan normalisering skulle samma fråga kunna
  * splittras i två. Frågans id byggs av det först sedda råa numret.
  */
-function numberKey(number: string): string {
+export function numberKey(number: string): string {
   return /^\d+(\.0+)?$/.test(number) ? String(Number(number)) : number.toLowerCase();
 }
 
-/** En datarad efter radvalidering, innan språkraderna slagits ihop. */
-interface RawRow {
+/** Sheets-felvärden som dyker upp som cellvärde när en formel failar. */
+const FORMULA_ERROR = /^#(ERROR!|N\/A|REF!|VALUE!|NAME\?|DIV\/0!|NUM!|NULL!)/;
+
+/**
+ * En rad i arket efter radvalidering. Både parsningen och planeringen av
+ * översättningsrader (translate.ts) bygger på de här posterna, så att det
+ * bara finns en implementation av nummerärvning och gruppering.
+ */
+export interface RowRecord {
+  /** 1-baserat radnummer i arket. */
   row: number;
+  kind: "title" | "question";
+  /** Upplöst nummer – kan vara ärvt från raden ovanför. */
   number: string;
+  /** Grupperingsnyckel, tom om raden saknar nummer. */
   key: string;
+  /** Upplöst språk: tom språkcell betyder baspråket. */
   language: string;
+  /** Om språkcellen faktiskt var ifylld. */
+  hasLanguageTag: boolean;
   questionText: string;
   /** Icke-tomma svarstexter i ordning. */
   answers: string[];
   /** Vilka svarskolumner som var ifyllda, t.ex. "110". */
   mask: string;
+  /** Kolumnindex för de ifyllda svarskolumnerna, i ordning. */
+  answerCols: number[];
   correctRaw: string;
+  /** false = raden bidrar inte med någon fråga (men den finns i arket). */
+  valid: boolean;
+}
+
+/** Resultatet av att skanna arkets rader, före sammanslagning av språk. */
+export interface ScanResult {
+  records: RowRecord[];
+  titleOverrides: LocalizedText;
+  languages: string[];
+  skipped: SkippedQuestion[];
+  warnings: string[];
+}
+
+/**
+ * Går igenom arkets datarader en gång och löser upp nummerärvning, språk,
+ * titelrader och radvalidering. Rader som inte ger någon fråga finns kvar i
+ * `records` med `valid: false` – planeraren behöver se att raden existerar,
+ * även när den är trasig, för att inte lägga till en ny varje körning.
+ */
+export function scanRows(
+  rows: string[][],
+  layout: Layout,
+  answerCount: number,
+  defaultLanguage: string,
+): ScanResult {
+  const multilingual = layout.languageCol !== null;
+  const records: RowRecord[] = [];
+  const titleOverrides: LocalizedText = {};
+  const languages: string[] = [];
+  const skipped: SkippedQuestion[] = [];
+  const warnings: string[] = [];
+  const seen = new Map<string, Set<string>>();
+  const oddCodes = new Set<string>();
+  let lastNumber = "";
+
+  for (let i = layout.dataStart; i < rows.length; i++) {
+    const cells = rows[i] ?? [];
+    const rowNo = i + 1;
+
+    // Helt tom rad – tyst hoppning (rapporteras inte).
+    if (cells.every((c) => c.trim() === "")) continue;
+
+    const cellAt = (col: number | null): string =>
+      col === null ? "" : (cells[col] ?? "").trim();
+
+    const numberCell = cellAt(layout.numberCol);
+    const languageCell = cellAt(layout.languageCol);
+    const questionText = cellAt(layout.questionCol);
+    const hasAnswerContent = cells
+      .slice(layout.firstAnswerCol, layout.correctCol + 1)
+      .some((c) => (c ?? "").trim() !== "");
+
+    // Tom språkcell betyder baspråket, så att en tillagd språkkolumn inte
+    // slår ut ett ark som ännu inte hunnit taggas.
+    const hasLanguageTag = multilingual && languageCell !== "";
+    const language = hasLanguageTag ? languageCell.toLowerCase() : defaultLanguage;
+
+    // Titelrad: nyckelordet står i nummerkolumnen och titeln i frågekolumnen –
+    // ingen extra kolumn införs.
+    if (TITLE_KEYWORDS.has(normalizeCell(numberCell))) {
+      const base = {
+        row: rowNo, kind: "title" as const, number: numberCell, key: "",
+        language, hasLanguageTag, questionText, answers: [], mask: "",
+        answerCols: [], correctRaw: "",
+      };
+      if (questionText === "") {
+        records.push({ ...base, valid: false });
+        continue;
+      }
+      if (titleOverrides[language] !== undefined) {
+        warnings.push(
+          `flera titelrader för språket "${language}" (rad ${rowNo}) – den första används`,
+        );
+        records.push({ ...base, valid: false });
+        continue;
+      }
+      titleOverrides[language] = questionText;
+      records.push({ ...base, valid: true });
+      continue;
+    }
+
+    if (numberCell !== "") lastNumber = numberCell;
+    // Sammanslagen nummercell: följdraden för nästa språk är tom och ärver.
+    // Ärvningen kräver en ifylld språkcell, så att en onumrerad skräprad inte
+    // tyst klistras på föregående fråga.
+    const number = numberCell !== "" || !hasLanguageTag ? numberCell : lastNumber;
+    const key = number === "" ? "" : multilingual ? numberKey(number) : number;
+
+    const answers: string[] = [];
+    const answerCols: number[] = [];
+    let mask = "";
+    for (let c = 0; c < answerCount; c++) {
+      const col = layout.firstAnswerCol + c;
+      const value = (cells[col] ?? "").trim();
+      if (value !== "") {
+        answers.push(value);
+        answerCols.push(col);
+        mask += "1";
+      } else {
+        mask += "0";
+      }
+    }
+
+    const record: RowRecord = {
+      row: rowNo, kind: "question", number, key, language, hasLanguageTag,
+      questionText, answers, mask,
+      answerCols, correctRaw: (cells[layout.correctCol] ?? "").trim(),
+      valid: false,
+    };
+    const drop = (reason?: string): void => {
+      if (reason) skipped.push({ row: rowNo, number: number === "" ? null : number, reason });
+      records.push(record);
+    };
+
+    if (number === "") {
+      // Rad med bara en språkkod och inget annat – lika ofarlig som ett
+      // förhandsallokerat nummer, rapporteras inte.
+      if (hasLanguageTag && questionText === "" && !hasAnswerContent) {
+        drop();
+      } else {
+        drop(`saknar nummer i kolumn ${colLetter(layout.numberCol)}`);
+      }
+      continue;
+    }
+
+    // En cell vars formel failat får inte tyst tolkas som tom text – då skulle
+    // frågan kunna försvinna ur utdatan utan varning, eller masken ändras så
+    // att fungerande översättningar faller bort med vilseledande orsak.
+    if ([questionText, ...answers].some((v) => FORMULA_ERROR.test(v))) {
+      drop("formelfel i cellen");
+      continue;
+    }
+
+    if (questionText === "") {
+      // Rad med bara ett förhandsallokerat nummer (frågeskaparna reserverar
+      // unika id:n i förväg) – tyst hoppning, ingen varning. Men om raden har
+      // svar eller rätt-markering utan fråga är det troligen ett misstag och
+      // rapporteras.
+      drop(hasAnswerContent ? "saknar frågetext" : undefined);
+      continue;
+    }
+
+    if (multilingual && !LANGUAGE_CODE.test(language) && !oddCodes.has(language)) {
+      oddCodes.add(language);
+      warnings.push(
+        `"${language}" ser inte ut som en språkkod (rad ${rowNo}) men används som nyckel`,
+      );
+    }
+
+    if (seen.get(key)?.has(language)) {
+      drop(multilingual ? `dubblerad rad för språket "${language}"` : "dubblerat frågenummer");
+      continue;
+    }
+
+    if (answers.length === 0) {
+      drop("inga svarsalternativ");
+      continue;
+    }
+
+    // I enspråkigt läge valideras rätt svar redan här, precis som förut. I
+    // flerspråkigt läge får siffran stå på vilken som helst av språkraderna
+    // och kontrolleras därför först när raderna slagits ihop.
+    if (!multilingual) {
+      const correctIndex = Number.parseInt(record.correctRaw, 10);
+      if (!Number.isInteger(correctIndex) || correctIndex < 1 || correctIndex > answers.length) {
+        drop(
+          record.correctRaw === ""
+            ? "rätt svar saknas"
+            : `ogiltig markering av rätt svar (förväntade 1–${answers.length})`,
+        );
+        continue;
+      }
+    }
+
+    const languagesForKey = seen.get(key);
+    if (languagesForKey) languagesForKey.add(language);
+    else seen.set(key, new Set([language]));
+
+    if (!languages.includes(language)) languages.push(language);
+    record.valid = true;
+    records.push(record);
+  }
+
+  return { records, titleOverrides, languages, skipped, warnings };
 }
 
 /**
@@ -244,154 +498,12 @@ export function parseQuestions(
   defaultLanguage: string,
 ): ParseResult {
   const { layout, warnings } = detectLayout(rows, answerCount);
-  const multilingual = layout.languageCol !== null;
-
-  const skipped: SkippedQuestion[] = [];
-  const titleOverrides: LocalizedText = {};
-  const languages: string[] = [];
-  const rawRows: RawRow[] = [];
-  const seen = new Map<string, Set<string>>();
-  const oddCodes = new Set<string>();
-  let lastNumber = "";
-
-  for (let i = layout.dataStart; i < rows.length; i++) {
-    const cells = rows[i] ?? [];
-    const rowNo = i + 1;
-
-    // Helt tom rad – tyst hoppning (rapporteras inte).
-    if (cells.every((c) => c.trim() === "")) continue;
-
-    const cellAt = (col: number | null): string =>
-      col === null ? "" : (cells[col] ?? "").trim();
-
-    const numberCell = cellAt(layout.numberCol);
-    const languageCell = cellAt(layout.languageCol);
-    const questionText = cellAt(layout.questionCol);
-    const hasAnswerContent = cells
-      .slice(layout.firstAnswerCol, layout.correctCol + 1)
-      .some((c) => (c ?? "").trim() !== "");
-
-    // Titelrad: nyckelordet står i nummerkolumnen och titeln i frågekolumnen –
-    // ingen extra kolumn införs.
-    if (TITLE_KEYWORDS.has(normalizeCell(numberCell))) {
-      if (questionText === "") continue;
-      const lang = multilingual ? languageCell.toLowerCase() : defaultLanguage;
-      if (lang === "") {
-        warnings.push(`titelrad utan språkkod (rad ${rowNo}) ignorerad`);
-      } else if (titleOverrides[lang] !== undefined) {
-        warnings.push(
-          `flera titelrader för språket "${lang}" (rad ${rowNo}) – den första används`,
-        );
-      } else {
-        titleOverrides[lang] = questionText;
-      }
-      continue;
-    }
-
-    if (numberCell !== "") lastNumber = numberCell;
-    // Sammanslagen nummercell: följdraden för nästa språk är tom och ärver.
-    const number =
-      numberCell !== "" || !multilingual || languageCell === "" ? numberCell : lastNumber;
-
-    if (number === "") {
-      // Rad med bara en språkkod och inget annat – lika ofarlig som ett
-      // förhandsallokerat nummer, rapporteras inte.
-      if (multilingual && languageCell !== "" && questionText === "" && !hasAnswerContent) {
-        continue;
-      }
-      skipped.push({
-        row: rowNo,
-        number: null,
-        reason: `saknar nummer i kolumn ${colLetter(layout.numberCol)}`,
-      });
-      continue;
-    }
-
-    if (questionText === "") {
-      // Rad med bara ett förhandsallokerat nummer (frågeskaparna reserverar
-      // unika id:n i förväg) – tyst hoppning, ingen varning. Men om raden har
-      // svar eller rätt-markering utan fråga är det troligen ett misstag och
-      // rapporteras.
-      if (hasAnswerContent) {
-        skipped.push({ row: rowNo, number, reason: "saknar frågetext" });
-      }
-      continue;
-    }
-
-    let language = defaultLanguage;
-    if (multilingual) {
-      language = languageCell.toLowerCase();
-      if (language === "") {
-        skipped.push({ row: rowNo, number, reason: "saknar språkkod" });
-        continue;
-      }
-      if (!LANGUAGE_CODE.test(language) && !oddCodes.has(language)) {
-        oddCodes.add(language);
-        warnings.push(
-          `"${language}" ser inte ut som en språkkod (rad ${rowNo}) men används som nyckel`,
-        );
-      }
-    }
-
-    const key = multilingual ? numberKey(number) : number;
-    if (seen.get(key)?.has(language)) {
-      skipped.push({
-        row: rowNo,
-        number,
-        reason: multilingual
-          ? `dubblerad rad för språket "${language}"`
-          : "dubblerat frågenummer",
-      });
-      continue;
-    }
-
-    const answers: string[] = [];
-    let mask = "";
-    for (let c = 0; c < answerCount; c++) {
-      const value = (cells[layout.firstAnswerCol + c] ?? "").trim();
-      if (value !== "") {
-        answers.push(value);
-        mask += "1";
-      } else {
-        mask += "0";
-      }
-    }
-
-    if (answers.length === 0) {
-      skipped.push({ row: rowNo, number, reason: "inga svarsalternativ" });
-      continue;
-    }
-
-    const correctRaw = (cells[layout.correctCol] ?? "").trim();
-    // I enspråkigt läge valideras rätt svar redan här, precis som förut. I
-    // flerspråkigt läge får siffran stå på vilken som helst av språkraderna
-    // och kontrolleras därför först när raderna slagits ihop.
-    if (!multilingual) {
-      const correctIndex = Number.parseInt(correctRaw, 10);
-      if (!Number.isInteger(correctIndex) || correctIndex < 1 || correctIndex > answers.length) {
-        skipped.push({
-          row: rowNo,
-          number,
-          reason:
-            correctRaw === ""
-              ? "rätt svar saknas"
-              : `ogiltig markering av rätt svar (förväntade 1–${answers.length})`,
-        });
-        continue;
-      }
-    }
-
-    const languagesForKey = seen.get(key);
-    if (languagesForKey) languagesForKey.add(language);
-    else seen.set(key, new Set([language]));
-
-    if (!languages.includes(language)) languages.push(language);
-    rawRows.push({ row: rowNo, number, key, language, questionText, answers, mask, correctRaw });
-  }
+  const scan = scanRows(rows, layout, answerCount, defaultLanguage);
+  const skipped = scan.skipped;
 
   const { questions, missingTranslations, droppedTranslations } = mergeLanguageRows(
-    rawRows,
-    languages,
+    scan.records.filter((r) => r.kind === "question" && r.valid),
+    scan.languages,
     defaultLanguage,
     skipped,
   );
@@ -401,12 +513,14 @@ export function parseQuestions(
 
   return {
     questions,
-    titleOverrides,
-    languages,
+    layout,
+    records: scan.records,
+    titleOverrides: scan.titleOverrides,
+    languages: scan.languages,
     skipped,
     missingTranslations,
     droppedTranslations,
-    warnings,
+    warnings: [...warnings, ...scan.warnings],
   };
 }
 
@@ -420,7 +534,7 @@ export function parseQuestions(
  * inte stämmer med baspråket faller bort för sig; frågan blir kvar.
  */
 function mergeLanguageRows(
-  rawRows: RawRow[],
+  rawRows: RowRecord[],
   languages: string[],
   defaultLanguage: string,
   skipped: SkippedQuestion[],
@@ -429,7 +543,7 @@ function mergeLanguageRows(
   missingTranslations: MissingTranslation[];
   droppedTranslations: DroppedTranslation[];
 } {
-  const groups = new Map<string, RawRow[]>();
+  const groups = new Map<string, RowRecord[]>();
   const order: string[] = [];
   for (const raw of rawRows) {
     const group = groups.get(raw.key);
@@ -455,7 +569,7 @@ function mergeLanguageRows(
     // Saknas baspråket får den första raden i arket rollen.
     const reference = group.find((r) => r.language === defaultLanguage) ?? first;
     const droppedHere = new Set<string>();
-    const dropTranslation = (raw: RawRow, reason: string): void => {
+    const dropTranslation = (raw: RowRecord, reason: string): void => {
       droppedHere.add(raw.language);
       const groupKey = `${raw.language}\n${reason}`;
       const entry = dropped.get(groupKey);
